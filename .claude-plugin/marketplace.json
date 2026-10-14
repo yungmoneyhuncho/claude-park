@@ -1,0 +1,7 @@
+{
+  "name": "park",
+  "owner": { "name": "yungmoneyhuncho" },
+  "plugins": [
+    { "name": "park", "source": "./", "description": "Park long sessions before the prompt cache expires." }
+  ]
+}

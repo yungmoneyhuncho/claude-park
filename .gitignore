@@ -1,0 +1,3 @@
+.claude/
+*.bak
+node_modules/
