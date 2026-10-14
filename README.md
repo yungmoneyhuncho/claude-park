@@ -75,7 +75,7 @@ Then restart Claude Code or the desktop app.
 
 - park only auto-loads snapshots written on your own machine. A `.claude/park` folder that ships inside a cloned repo is ignored.
 - Loaded snapshots are handed to Claude as notes about past work, not as instructions.
-- park refuses to write if `.claude` or `.claude/park` is a symlink.
+- park refuses to write through any symlink in its state folder (the folders or the files themselves).
 - The state folder is gitignored automatically.
 
 ## Honest limits

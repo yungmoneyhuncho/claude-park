@@ -115,3 +115,12 @@ test('refuses to write through a symlinked park folder', async ($, on) => {
   expect(Object.keys(s.files)).toEqual([])
   expect(logs.join()).toContain('symlink')
 })
+
+test('refuses to overwrite a symlinked CONTEXT.md inside a session folder', async ($, on) => {
+  const { clock, s, logs } = world(on)
+  on('fs.stat', async (_$, e) => v({ kind: 'file', size: 0, mtimeMs: 0, isLink: (e as unknown as { path: string }).path.endsWith('CONTEXT.md') }))
+  await $.turn.complete(TURN as never)
+  await clock.advance(30_000)
+  expect(Object.keys(s.files).some(f => f.endsWith('CONTEXT.md'))).toBe(false)
+  expect(logs.join()).toContain('symlink')
+})
