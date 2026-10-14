@@ -1,6 +1,6 @@
 {
   "name": "park",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Stops paying full price to come back to a long Claude Code session: warns before the prompt cache expires, auto-compacts while it is still warm, leaves a handoff note, and tracks the tokens saved.",
   "author": { "name": "yungmoneyhuncho" }
 }

@@ -71,6 +71,13 @@ claude plugin install park@park
 
 Then restart Claude Code or the desktop app.
 
+## Safety
+
+- park only auto-loads snapshots written on your own machine. A `.claude/park` folder that ships inside a cloned repo is ignored.
+- Loaded snapshots are handed to Claude as notes about past work, not as instructions.
+- park refuses to write if `.claude` or `.claude/park` is a symlink.
+- The state folder is gitignored automatically.
+
 ## Honest limits
 
 - Auto-park needs the app running. If the machine crashes or loses power, there's nothing left to compact; the latest per-turn snapshot is what a new session picks up.
