@@ -17,7 +17,7 @@ Works in the Claude desktop app and the CLI:
 - **Saves on close**: closing the app or terminal writes a snapshot (local files, no model call).
 - **Picks up automatically**: open a new session in that project and type anything. park attaches the parked state to your first message. You don't have to go back into five old sessions and tell each one to wrap up.
 - **Guards cold returns**: if you do come back to an expired, unparked session, park holds your first message once and tells you what it would cost. Send it again to go ahead anyway.
-- **Tracks savings**: a toast on every resume, `/park stats` for the lifetime total.
+- **Tracks real savings**: a park only saves money when you come back to that session after its cache expired, because the return re-caches a short summary instead of the whole history. park logs each park (with what the compaction itself cost) and each return, and the status line shows the net in USD. Handoffs into a new session are listed separately and not counted, since you might never have reopened the old session.
 
 ## The state folder
 
@@ -57,7 +57,7 @@ The best fix is smaller sessions. Ask Claude to tell you when a session starts d
 ## Commands
 
 - `/park`: compact and save now (do it before you walk away).
-- `/park stats`: resumes, tokens not re-sent, snapshots.
+- `/park stats`: parks, returns after the cache expired, tokens not re-cached, USD saved, what compactions cost, the net, and the uncounted handoffs. USD uses `USD_PER_M` in `hooks/register.ts` (about $5.20 per million tokens, measured on an Opus 1M-context cold start); change it for your model and plan.
 
 ## Install
 

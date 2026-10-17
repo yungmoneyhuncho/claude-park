@@ -19,7 +19,7 @@ type Ledger = { snapshots: number; resumes: number; tokensSaved: number }
 // logged but not counted (you might never have resumed the old one).
 const EVENTS = 'events'
 const PENDING = 'pending'
-const USD_PER_M = 5.2 // cache-write $/M tokens, measured here 2026-10-17 (45.3k-token cold start cost $0.236)
+const USD_PER_M = 5.2 // cache-write $/M tokens, measured on an Opus 1M-context cold start (45.3k tokens cost $0.236); set yours
 type Ev = { t: number; kind: 'park' | 'return' | 'handoff'; sid: string; tokens: number; saved: number; usd: number; idleMin?: number }
 let returning: { before: number; idleMin: number } | undefined
 type Msg = SessionMessage
