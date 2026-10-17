@@ -6,11 +6,15 @@ const v = (value: unknown) => ({ value }) as never
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 
 // The world beneath the plugin: a 300k-token session in /proj; compaction shrinks it to a 20k summary.
-function world(on: On, opts: { canCompact?: boolean; id?: string; turns?: number; store?: Record<string, unknown> } = {}) {
+function world(on: On, opts: { canCompact?: boolean; id?: string; turns?: number; store?: Record<string, unknown>; mem?: Record<string, unknown> } = {}) {
   const clock = mock.clock(on)
   const logs: string[] = []
   const toasts: string[] = []
-  mock.store(on, opts.store)
+  if (opts.mem) {
+    const m = opts.mem
+    on('store.get', async (_$, e) => v(m[(e as unknown as { key: string }).key]))
+    on('store.set', async (_$, e) => { const w = e as unknown as { key: string; value: unknown }; m[w.key] = w.value; return v(undefined) })
+  } else mock.store(on, opts.store)
   const s = { tokens: 300_000, compacts: 0, turns: opts.turns ?? 3, files: {} as Record<string, string>, compacted: false }
   on('session.usage', async () => v({ startedAt: Date.UTC(2026, 9, 13), context: { tokens: s.tokens, window: 1_000_000 } }))
   on('session.compact', async () => {
@@ -123,4 +127,30 @@ test('refuses to overwrite a symlinked CONTEXT.md inside a session folder', asyn
   await clock.advance(30_000)
   expect(Object.keys(s.files).some(f => f.endsWith('CONTEXT.md'))).toBe(false)
   expect(logs.join()).toContain('symlink')
+})
+
+test('logs real savings only when you come back to a parked session after the cache died', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { clock } = world(on, { mem: store })
+  await $.turn.complete(TURN as never)
+  await clock.advance(56 * 60_000) // parks: 300k -> 20k
+  await clock.advance(70 * 60_000) // away 2h, cache long gone
+  await $.prompt.submit({ text: 'back' } as never)
+  await $.turn.complete(TURN as never)
+  const evs = (store.events ?? []) as { kind: string; saved: number; usd: number }[]
+  expect(evs.map(e => e.kind)).toEqual(['park', 'return'])
+  expect(evs[1].saved).toBe(280_000)
+  expect(Math.round(evs[1].usd * 1000)).toBe(1456)
+})
+
+test('a warm return after a park logs no saving', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { clock } = world(on, { mem: store })
+  await $.turn.complete(TURN as never)
+  await clock.advance(56 * 60_000)
+  await clock.advance(2 * 60_000) // back at 58 min, cache still warm
+  await $.prompt.submit({ text: 'back' } as never)
+  await $.turn.complete(TURN as never)
+  const evs = (store.events ?? []) as { kind: string; saved: number }[]
+  expect(evs.map(e => [e.kind, e.saved])).toEqual([['park', 0], ['return', 0]])
 })

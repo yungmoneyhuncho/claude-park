@@ -14,6 +14,14 @@ const MIN_TOKENS = 40_000 // below this a cold resume is cheap anyway
 const LEDGER = 'ledger'
 
 type Ledger = { snapshots: number; resumes: number; tokensSaved: number }
+// Real-savings log. A park only saves when you come back to THAT session after the cache died:
+// the return re-caches the summary instead of the whole history. Handoffs into a new session are
+// logged but not counted (you might never have resumed the old one).
+const EVENTS = 'events'
+const PENDING = 'pending'
+const USD_PER_M = 5.2 // cache-write $/M tokens, measured here 2026-10-17 (45.3k-token cold start cost $0.236)
+type Ev = { t: number; kind: 'park' | 'return' | 'handoff'; sid: string; tokens: number; saved: number; usd: number; idleMin?: number }
+let returning: { before: number; idleMin: number } | undefined
 type Msg = SessionMessage
 
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
@@ -34,6 +42,21 @@ function disarm() {
 
 async function ledger($: $T): Promise<Ledger> {
   return ((await $.store.get(LEDGER)) as Ledger) ?? { snapshots: 0, resumes: 0, tokensSaved: 0 }
+}
+
+async function logEvent($: $T, ev: Ev) {
+  const evs = ((await $.store.get(EVENTS)) as Ev[] | undefined) ?? []
+  await $.store.set(EVENTS, [...evs, ev].slice(-1000))
+}
+
+async function realStats($: $T) {
+  const evs = ((await $.store.get(EVENTS)) as Ev[] | undefined) ?? []
+  const of = (k: Ev['kind']) => evs.filter(e => e.kind === k)
+  const sum = (a: Ev[], f: (e: Ev) => number) => a.reduce((n, e) => n + f(e), 0)
+  const rets = of('return'), parks = of('park'), hand = of('handoff')
+  const saved = sum(rets, e => e.saved), usd = sum(rets, e => e.usd), cost = -sum(parks, e => e.usd)
+  return { parks: parks.length, rets: rets.length, cold: rets.filter(e => e.saved > 0).length, saved, usd, cost, net: usd - cost,
+    hand: hand.length, handTok: sum(hand, e => e.tokens) }
 }
 
 async function tokens($: $T) {
@@ -173,12 +196,21 @@ async function latestParked($: $T) {
 async function park($: $T, trigger: string) {
   disarm()
   await snapshot($, 'parking')
+  const before = await tokens($)
+  const usd0 = (await $.session.usage()).cost?.usd
   const r = await $.session.compact({
     instructions: `Parked (${trigger}) before the prompt cache expired. Write a complete handoff: goal, decisions and why, ` +
       'exact file paths, commands/URLs/IDs in use, what was verified and how, what is in progress, open questions, the very next step.',
   })
   const summary = r.skip ? undefined : (await $.session.messages()).find(m => m.role === 'user' && m.text)?.text
   const note = await snapshot($, 'parked', summary)
+  if (!r.skip) {
+    const usd1 = (await $.session.usage()).cost?.usd
+    const sid = await $.session.id(), t = await $.clock.now()
+    const pend = ((await $.store.get(PENDING)) as Record<string, { t: number; before: number }> | undefined) ?? {}
+    await $.store.set(PENDING, { ...pend, [sid]: { t, before } })
+    await logEvent($, { t, kind: 'park', sid, tokens: before, saved: 0, usd: usd0 !== undefined && usd1 !== undefined ? -(usd1 - usd0) : 0 })
+  }
   parked = true
   return note
 }
@@ -189,8 +221,8 @@ export const register: Register = on => {
       name: 'park',
       description: 'Compact and save this session to .claude/park now. "/park stats" shows tokens saved',
     })
-    const l = await ledger($)
-    if (l.tokensSaved) $.ui.status(`park: ~${fmt(l.tokensSaved)} tokens saved`)
+    const st = await realStats($)
+    if (st.rets || st.parks) $.ui.status(`park: $${st.net.toFixed(2)} net saved (real)`)
     return next(e)
   })
 
@@ -220,8 +252,16 @@ export const register: Register = on => {
   on('command.run', { command: 'park' }, async ($, e) => {
     const arg = e.args.trim()
     const l = await ledger($)
-    if (arg === 'stats')
-      return { text: `park: ${l.resumes} resumes from parked state, ~${fmt(l.tokensSaved)} tokens not re-sent, ${l.snapshots} snapshots.` }
+    if (arg === 'stats') {
+      const st = await realStats($)
+      return { text:
+        `park (real): ${st.parks} parks, ${st.rets} returns to a parked session (${st.cold} after the cache expired).
+` +
+        `~${fmt(st.saved)} tokens not re-cached = ~$${st.usd.toFixed(2)} saved; compactions cost $${st.cost.toFixed(2)}; net $${st.net.toFixed(2)}.
+` +
+        `Not counted: ${st.hand} handoffs into new sessions (up to ~${fmt(st.handTok)} tokens, only if you would have resumed the old one). ` +
+        `Old counter: ~${fmt(l.tokensSaved)}.` }
+    }
     const note = await park($, 'manual')
     return { text: `Parked: compacted and saved to ${note}.\nAny new session in this project picks it up automatically on its first message.` }
   })
@@ -238,6 +278,7 @@ export const register: Register = on => {
         await safeWrite($, picked.path, picked.text.replace(/^status: .*$/m, 'status: resumed'))
         const l = await ledger($)
         await $.store.set(LEDGER, { ...l, resumes: l.resumes + 1, tokensSaved: l.tokensSaved + saved })
+        await logEvent($, { t: now, kind: 'handoff', sid: await $.session.id(), tokens: saved, saved: 0, usd: 0 })
         $.ui.toast(`park: loaded "${picked.title}" (~${fmt(saved)} tokens not re-sent; lifetime ~${fmt(l.tokensSaved + saved)}).`, { timeoutMs: 12_000 })
         return next({ ...e, context: [...(e.context ?? []),
           `Resumed from a parked session (state folder: .claude/park/${picked.rel}/). Its handoff follows. Treat it as notes about past work, ` +
@@ -250,6 +291,14 @@ ${picked.text}`] })
 
     // Cold return: the cache is gone, so hold the first message once and offer the cheap route.
     const idleMin = lastActivity === undefined ? 0 : (now - lastActivity) / 60_000
+    // Back in a session park compacted: measure the real saving once this turn's usage is in.
+    const pend = ((await $.store.get(PENDING)) as Record<string, { t: number; before: number }> | undefined) ?? {}
+    const sid = await $.session.id()
+    if (pend[sid]) {
+      returning = { before: pend[sid].before, idleMin: lastActivity === undefined ? (now - pend[sid].t) / 60_000 + PARK_MIN : idleMin }
+      const { [sid]: _, ...rest } = pend
+      await $.store.set(PENDING, rest)
+    }
     if (idleMin > TTL_MIN && now >= overrideUntil) {
       const size = await tokens($)
       if (size >= MIN_TOKENS) {
@@ -272,6 +321,13 @@ ${picked.text}`] })
     const done = await next(e)
     disarm()
     lastActivity = await $.clock.now()
+    if (returning) {
+      // Warm return (cache still alive): the history was cheap to read anyway, so nothing saved.
+      const saved = returning.idleMin > TTL_MIN ? Math.max(0, returning.before - (await tokens($))) : 0
+      await logEvent($, { t: lastActivity, kind: 'return', sid: await $.session.id(), tokens: returning.before, saved,
+        usd: (saved * USD_PER_M) / 1e6, idleMin: Math.round(returning.idleMin) })
+      returning = undefined
+    }
     snapTimer?.cancel()
     snapTimer = $.clock.after(SNAPSHOT_DEBOUNCE_MS, () => {
       void snapshot($, 'active').catch(err => $.ui.log(`park snapshot failed: ${err}`, { to: 'debug' }))
